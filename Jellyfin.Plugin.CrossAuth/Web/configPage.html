@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Jellyfin Multiverse</title>
+</head>
+<body>
+<div id="CrossAuthConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox">
+  <div data-role="content">
+    <div id="caVersionBanner" style="display:none; margin:1em; padding:12px; border-radius:6px; background:#b71c1c; color:#fff;"></div>
+    <div class="content-primary" id="caMain">
+
+      <style>
+        .ca-box { border: 1px solid #555; border-radius: 6px; padding: 12px; margin: 12px 0; }
+        .ca-box label.ca-line { display: block; margin: 6px 0; }
+        .ca-box input[type=text], .ca-box input[type=password], .ca-box input[type=number] {
+          width: 100%; max-width: 420px; padding: 6px; background: #222; color: #eee; border: 1px solid #555; border-radius: 4px; }
+        .ca-libs { margin: 6px 0 6px 18px; }
+        .ca-libs label { display: block; }
+        .ca-hint { opacity: 0.65; font-size: 0.85em; }
+        .ca-btn { padding: 8px 14px; margin: 6px 6px 0 0; cursor: pointer; }
+      </style>
+
+      <h1>Jellyfin Multiverse</h1>
+      <p class="ca-hint">
+        Pair servers, limit guests and choose which libraries they may see.
+        Library lists work in three levels: default, then per server, then per guest (most specific wins).
+      </p>
+
+      <h2>General</h2>
+      <div class="ca-box">
+        <label class="ca-line"><input type="checkbox" id="caEnable"> Accept guests from paired servers</label>
+        <label class="ca-line"><input type="checkbox" id="caHttp"> Allow plain http (unsafe, only for testing on a private network)</label>
+        <label class="ca-line">Maximum guests at the same time, all servers together (0 = nobody)
+          <input type="number" id="caMax" min="0" max="100"></label>
+        <div>Default libraries for guests:</div>
+        <div class="ca-libs" id="caDefaultLibs"></div>
+      </div>
+
+      <h2>Paired servers</h2>
+      <p class="ca-hint">
+        Both admins must enter the SAME Pairing ID and Secret. Use "Generate" on one side and
+        copy the two values to the other server. Send the secret over a private channel.
+      </p>
+      <div id="caServers"></div>
+      <button type="button" class="ca-btn" id="caAddServer">Add server</button>
+
+      <h2>Guests seen so far</h2>
+      <p class="ca-hint">Guests appear here after they browse or sign in. You can block them or give them their own libraries.</p>
+      <div id="caUsers"></div>
+
+      <button type="button" class="ca-btn" id="caSave"
+              style="margin-top:20px; font-weight:bold;">Save</button>
+
+    </div>
+  </div>
+
+  <script type="text/javascript">
+    // ADMIN SETTINGS PAGE
+    // Loads the plugin configuration, draws it, and saves it back.
+    // The field names (Enable..., TrustedServers, ...) match Configuration/PluginConfiguration.cs exactly.
+    (function () {
+      var PLUGIN_ID = 'b7c1e5a2-3d4f-4a89-9c61-2f8e7d5a1b34';
+      var page = document.querySelector('#CrossAuthConfigPage');
+      var config = null;     // the settings object being edited
+      var libraries = [];    // all libraries of this server: { Name, ItemId }
+
+      // ---------- small helpers ----------
+
+      // Escapes text so names can never inject html.
+      function esc(text) {
+        return String(text == null ? '' : text).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+
+      // Library ids are compared in one format (lowercase, no dashes).
+      function norm(id) { return String(id || '').replace(/-/g, '').toLowerCase(); }
+
+      // Random hex text, used for the Generate button (pairing id and secret).
+      function randomHex(byteCount) {
+        var bytes = new Uint8Array(byteCount);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      }
+
+      // Draws one checkbox per library. "selected" is the list of ticked ids, "cls" marks the group.
+      function libraryChecks(selected, cls) {
+        var chosen = (selected || []).map(norm);
+        return libraries.map(function (lib) {
+          var id = norm(lib.ItemId);
+          return '<label><input type="checkbox" class="' + cls + '" value="' + id + '"'
+            + (chosen.indexOf(id) >= 0 ? ' checked' : '') + '> ' + esc(lib.Name) + '</label>';
+        }).join('') || '<span class="ca-hint">No libraries found.</span>';
+      }
+
+      // Reads the ticked library ids from inside a container element.
+      function readLibraries(container, cls) {
+        return Array.from(container.querySelectorAll('input.' + cls + ':checked'))
+          .map(function (box) { return box.value; });
+      }
+
+      // ---------- drawing ----------
+
+      // Draws the general section.
+      function renderGeneral() {
+        page.querySelector('#caEnable').checked = !!config.EnableFederation;
+        page.querySelector('#caHttp').checked = !!config.AllowInsecureHttp;
+        page.querySelector('#caMax').value = config.MaxConcurrentExternalUsers;
+        page.querySelector('#caDefaultLibs').innerHTML = libraryChecks(config.DefaultLibraryIds, 'ca-default');
+      }
+
+      // Draws one box per paired server.
+      function renderServers() {
+        page.querySelector('#caServers').innerHTML = config.TrustedServers.map(function (s, i) {
+          return '<div class="ca-box ca-server" data-index="' + i + '">'
+            + '<label class="ca-line">Name <input type="text" data-f="Name" value="' + esc(s.Name) + '"></label>'
+            + '<label class="ca-line">Address (for example https://jelly.example.com) <input type="text" data-f="BaseUrl" value="' + esc(s.BaseUrl) + '"></label>'
+            + '<label class="ca-line">Pairing ID <input type="text" data-f="PairingId" value="' + esc(s.PairingId) + '"></label>'
+            + '<label class="ca-line">Secret <input type="password" data-f="Secret" value="' + esc(s.Secret) + '"></label>'
+            + '<button type="button" class="ca-btn" data-action="generate">Generate ID and secret</button>'
+            + '<label class="ca-line"><input type="checkbox" data-f="Enabled"' + (s.Enabled ? ' checked' : '') + '> Enabled</label>'
+            + '<label class="ca-line"><input type="checkbox" data-f="AllowIncoming"' + (s.AllowIncoming ? ' checked' : '') + '> Their users may sign in here</label>'
+            + '<label class="ca-line"><input type="checkbox" data-f="ShowInCatalog"' + (s.ShowInCatalog ? ' checked' : '') + '> Show their media in my Federated Library</label>'
+            + '<label class="ca-line">Max guests from this server (0 = only the global limit) '
+            + '<input type="number" min="0" max="100" data-f="MaxConcurrentUsers" value="' + (s.MaxConcurrentUsers || 0) + '"></label>'
+            + '<label class="ca-line"><input type="checkbox" data-f="OverrideLibraries"' + (s.OverrideLibraries ? ' checked' : '') + '> Use own library list for this server</label>'
+            + '<div class="ca-libs">' + libraryChecks(s.LibraryIds, 'ca-srvlib') + '</div>'
+            + '<button type="button" class="ca-btn" data-action="remove">Remove server</button>'
+            + '</div>';
+        }).join('') || '<p class="ca-hint">No servers paired yet.</p>';
+      }
+
+      // Draws one box per known guest.
+      function renderUsers() {
+        page.querySelector('#caUsers').innerHTML = config.ExternalUsers.map(function (u, i) {
+          var server = config.TrustedServers.filter(function (s) { return s.PairingId === u.PairingId; })[0];
+          return '<div class="ca-box ca-user" data-index="' + i + '">'
+            + '<strong>' + esc(u.HomeUserName) + '</strong> <span class="ca-hint">from ' + esc(server ? server.Name : 'unknown server') + '</span>'
+            + '<label class="ca-line"><input type="checkbox" data-f="Blocked"' + (u.Blocked ? ' checked' : '') + '> Blocked</label>'
+            + '<label class="ca-line"><input type="checkbox" data-f="OverrideLibraries"' + (u.OverrideLibraries ? ' checked' : '') + '> Use own library list for this guest</label>'
+            + '<div class="ca-libs">' + libraryChecks(u.LibraryIds, 'ca-usrlib') + '</div>'
+            + '</div>';
+        }).join('') || '<p class="ca-hint">No guests yet.</p>';
+      }
+
+      // ---------- reading the form back into the config object ----------
+
+      // Copies everything on screen into the "config" object.
+      function collect() {
+        config.EnableFederation = page.querySelector('#caEnable').checked;
+        config.AllowInsecureHttp = page.querySelector('#caHttp').checked;
+        config.MaxConcurrentExternalUsers = parseInt(page.querySelector('#caMax').value, 10) || 0;
+        config.DefaultLibraryIds = readLibraries(page.querySelector('#caDefaultLibs'), 'ca-default');
+
+        Array.from(page.querySelectorAll('.ca-server')).forEach(function (box) {
+          var s = config.TrustedServers[box.dataset.index];
+          function field(name) { return box.querySelector('[data-f=' + name + ']'); }
+          s.Name = field('Name').value.trim();
+          s.BaseUrl = field('BaseUrl').value.trim();
+          s.PairingId = field('PairingId').value.trim();
+          s.Secret = field('Secret').value;
+          s.Enabled = field('Enabled').checked;
+          s.AllowIncoming = field('AllowIncoming').checked;
+          s.ShowInCatalog = field('ShowInCatalog').checked;
+          s.MaxConcurrentUsers = parseInt(field('MaxConcurrentUsers').value, 10) || 0;
+          s.OverrideLibraries = field('OverrideLibraries').checked;
+          s.LibraryIds = readLibraries(box, 'ca-srvlib');
+        });
+
+        Array.from(page.querySelectorAll('.ca-user')).forEach(function (box) {
+          var u = config.ExternalUsers[box.dataset.index];
+          u.Blocked = box.querySelector('[data-f=Blocked]').checked;
+          u.OverrideLibraries = box.querySelector('[data-f=OverrideLibraries]').checked;
+          u.LibraryIds = readLibraries(box, 'ca-usrlib');
+        });
+      }
+
+
+      // Asks the plugin whether this Jellyfin is new enough. If not, shows a red banner with the
+      // update message and hides the normal screen. Returns a promise of true (ok) or false (too old).
+      // Related to: Api/StatusController.cs
+      function checkSupported() {
+        return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl('CrossAuth/Status'), dataType: 'json' })
+          .then(function (status) {
+            page.querySelector('#caVersionBanner').style.display = status.Supported ? 'none' : 'block';
+            page.querySelector('#caVersionBanner').textContent = status.Message || '';
+            page.querySelector('#caMain').style.display = status.Supported ? '' : 'none';
+            return !!status.Supported;
+          })
+          .catch(function () { return true; }); // if the check itself fails, do not block the page
+      }
+
+      // ---------- loading and saving ----------
+
+      // Loads the settings and the library list, then draws everything.
+      function load() {
+        checkSupported().then(function (supported) {
+          if (!supported) return;
+
+          Dashboard.showLoadingMsg();
+          Promise.all([
+            ApiClient.getPluginConfiguration(PLUGIN_ID),
+            ApiClient.getJSON(ApiClient.getUrl('Library/VirtualFolders'))
+          ]).then(function (results) {
+            config = results[0];
+            libraries = results[1];
+            config.TrustedServers = config.TrustedServers || [];
+            config.ExternalUsers = config.ExternalUsers || [];
+            config.DefaultLibraryIds = config.DefaultLibraryIds || [];
+            renderGeneral();
+            renderServers();
+            renderUsers();
+            Dashboard.hideLoadingMsg();
+          });
+        });
+      }
+
+      // Saves the settings. Servers without address, id or secret are refused.
+      function save() {
+        collect();
+
+        var bad = config.TrustedServers.filter(function (s) {
+          return !s.Name || !s.BaseUrl || !s.PairingId || !s.Secret || s.Secret.length < 16;
+        });
+        if (bad.length) {
+          Dashboard.alert('Every server needs a name, an address, a pairing ID and a secret of at least 16 characters.');
+          return;
+        }
+
+        Dashboard.showLoadingMsg();
+        ApiClient.updatePluginConfiguration(PLUGIN_ID, config)
+          .then(Dashboard.processPluginConfigurationUpdateResult);
+      }
+
+      // ---------- events ----------
+
+      page.addEventListener('pageshow', load);
+      page.querySelector('#caSave').addEventListener('click', save);
+
+      // "Add server" appends an empty server and redraws.
+      page.querySelector('#caAddServer').addEventListener('click', function () {
+        collect();
+        config.TrustedServers.push({
+          PairingId: '', Name: '', BaseUrl: '', Secret: '', Enabled: true, AllowIncoming: true,
+          ShowInCatalog: true, MaxConcurrentUsers: 0, OverrideLibraries: false, LibraryIds: []
+        });
+        renderServers();
+      });
+
+      // Buttons inside a server box: generate credentials, remove server.
+      page.querySelector('#caServers').addEventListener('click', function (event) {
+        var button = event.target.closest('button[data-action]');
+        if (!button) return;
+        var box = button.closest('.ca-server');
+
+        if (button.dataset.action === 'generate') {
+          box.querySelector('[data-f=PairingId]').value = randomHex(16);
+          box.querySelector('[data-f=Secret]').value = randomHex(32);
+        } else if (button.dataset.action === 'remove') {
+          collect();
+          config.TrustedServers.splice(parseInt(box.dataset.index, 10), 1);
+          renderServers();
+          renderUsers();
+        }
+      });
+    })();
+  </script>
+</div>
+</body>
+</html>

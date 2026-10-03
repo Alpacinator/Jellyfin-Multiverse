@@ -1,0 +1,11 @@
+[
+  {
+    "guid": "b7c1e5a2-3d4f-4a89-9c61-2f8e7d5a1b34",
+    "name": "Jellyfin Multiverse",
+    "description": "Lets users of other trusted Jellyfin servers sign in here, with limits and library restrictions. Requires Jellyfin 12.1 or newer.",
+    "overview": "Cross server authentication and federated library view",
+    "owner": "Alpacinator",
+    "category": "General",
+    "versions": []
+  }
+]
