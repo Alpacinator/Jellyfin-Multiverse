@@ -12,4 +12,4 @@ restrictions, plus a combined library view. Requires Jellyfin 12.1 or newer.
 
 The plugin shows up after the first release is published: `git tag v1.1.0.0` then `git push origin v1.1.0.0`.
 
-More details: [Jellyfin.Plugin.CrossAuth/README.md](Jellyfin.Plugin.CrossAuth/README.md)
+More details: [Jellyfin.Plugin.Multiverse/README.md](Jellyfin.Plugin.Multiverse/README.md)

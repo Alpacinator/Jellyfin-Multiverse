@@ -7,7 +7,7 @@ Run by .github/workflows/release.yml after the release zip has been uploaded. It
   2. builds the download link of the zip on the GitHub release
   3. puts the new version at the top of the "versions" list (newest first)
 
-Related to: manifest.json, Jellyfin.Plugin.CrossAuth/meta.json
+Related to: manifest.json, Jellyfin.Plugin.Multiverse/meta.json
 """
 import argparse
 import hashlib
